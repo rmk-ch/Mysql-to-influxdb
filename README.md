@@ -3,6 +3,10 @@ Quick hack to get data from MySQL into influx db to display with Graphite and Gr
 
 This script will meant to run constantly or one time and send data from a single table in MYSQL to influx. If you have multiple tables this will be an issue. Also it requires that the MYSQL table is altered to have a specific column which indicates whether this piece of data has been copied to influx already or not.
 
+# Log
+
+2020/10/08: Python 3 and replace Mysql-Python
+
 # Config
 This script needs a config file to run simply create config file.  Below is a samle config file for settings.ini
 
