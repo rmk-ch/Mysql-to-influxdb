@@ -1,15 +1,13 @@
 #!/usr/bin/python
 
 import logging
-import os
 import argparse
-import MySQLdb
-import MySQLdb.cursors
+import pymysql
+import pymysql.cursors
 import time
 
-from ConfigParser import RawConfigParser
+from configparser import RawConfigParser
 from influxdb import InfluxDBClient
-from time_utils import get_epoch_from_datetime
 from datetime import datetime
 logger = logging.getLogger(__name__)
 
@@ -46,11 +44,11 @@ class Mysql2Influx:
 
 
     def initialise_database(self):
-        self._db_client = MySQLdb.connect ( self._mysql_host,
+        self._db_client = pymysql.connect ( self._mysql_host,
                                             self._mysql_username,
                                             self._mysql_password,
                                             self._mysql_db,
-                                            cursorclass = MySQLdb.cursors.DictCursor
+                                            cursorclass = pymysql.cursors.DictCursor
                                             )
 
         self._influx_client = InfluxDBClient(
@@ -112,15 +110,18 @@ class Mysql2Influx:
             for row in data:
                 data_list =[]
                 for key in row.keys():
-                    #format date to epoch
-                    epoch_time = row[self._time_field].isoformat()
-                    if not isinstance(row[key],datetime):
-                        data_point = {"measurement":key,
-                                     "tags":{"site_name":row[self._siteid_field],
-                                        "source": "wago"},
-                                     "time" : "%sZ"%epoch_time,
-                                   "fields" : {"value":row[key]}
-                                    }
+                    epoch_time = row[self._time_field]
+
+                    if not isinstance(row[key], datetime):
+                        data_point = {
+                            "measurement": key,
+                            "tags": {
+                                "site_name": row[self._siteid_field],
+                                "source": "ckend"
+                            },
+                            "time": "%s" % epoch_time,
+                            "fields": {"value": row[key]}
+                        }
 
                         data_list.append(data_point)
                         logger.debug("data_point = %s"%data_point)
@@ -165,7 +166,7 @@ def main():
         while True:
             try:
                 mclient.transfer_data()
-            except Exception,e:
+            except Exception as e:
                 logger.exception("Error occured will try again")
             time.sleep(_sleep_time)
             mclient.initialise_database()
