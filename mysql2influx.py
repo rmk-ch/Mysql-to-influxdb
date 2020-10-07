@@ -110,7 +110,7 @@ class Mysql2Influx:
             for row in data:
                 data_list =[]
                 for key in row.keys():
-                    epoch_time = row[self._time_field]
+                    epoch_time = row[self._time_field].isoformat()
 
                     if not isinstance(row[key], datetime):
                         data_point = {
