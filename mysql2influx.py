@@ -7,7 +7,8 @@ import pymysql.cursors
 import time
 
 from configparser import RawConfigParser
-from influxdb import InfluxDBClient
+from influxdb_client import InfluxDBClient
+from influxdb_client .client.write_api import SYNCHRONOUS
 from datetime import datetime
 logger = logging.getLogger(__name__)
 
@@ -19,69 +20,82 @@ class Mysql2Influx:
         #TODO put site info into settings file
         self._site_name = config.get('site_info','site_name')
         self._table = config.get('mysql','table')
-        self._siteid_field = config.get('mysql','siteid_field')
+        self._time_field = config.get('mysql','time_field')
 
-        if config.has_option('mysql','time_field'):
-            self._time_field = config.get('mysql','time_field')
-        else:
-            self._time_field = 'timestamp'
         #intitialise client for mysql database
         self._mysql_host = config.get('mysql','host')
         self._mysql_username = config.get('mysql','username')
         self._mysql_password = config.get('mysql','password')
         self._mysql_db = config.get('mysql','db')
+        self._extra_where_field = config.get('mysql', 'extra_where_field')
 
-        self._influx_db_host = config.get('influx','host')
-        self._influx_db_port = config.get('influx','port')
-        self._influx_db_username = config.get('influx','username')
-        self._influx_db_password = config.get('influx','password')
-        self._influx_db = config.get('influx','db')
+        self._influx_db_url = config.get('influx','url')
+        self._influx_db_token = config.get('influx','token')
+        self._influx_db_org = config.get('influx','org')
+        self._influx_db_bucket = config.get('influx','bucket')
 
-        self._complete = False
         self._check_field = config.get('mysql','check_field')
 
-        self.initialise_database()
+        self.connect()
 
 
-    def initialise_database(self):
-        self._db_client = pymysql.connect ( self._mysql_host,
-                                            self._mysql_username,
-                                            self._mysql_password,
-                                            self._mysql_db,
+    def connect(self):
+        self._db_client = pymysql.connect ( host = self._mysql_host,
+                                            user = self._mysql_username,
+                                            password = self._mysql_password,
+                                            db = self._mysql_db,
                                             cursorclass = pymysql.cursors.DictCursor
                                             )
 
         self._influx_client = InfluxDBClient(
-                                            self._influx_db_host,
-                                            self._influx_db_port,
-                                            self._influx_db_username,
-                                            self._influx_db_password,
-                                            self._influx_db
+                                            url=self._influx_db_url,
+                                            token=self._influx_db_token,
+                                            org=self._influx_db_org,
+                                            debug=False
                                             )
+        self._write_api = self._influx_client.write_api(write_options=SYNCHRONOUS)
 
 
 
-    def transfer_data(self):
-        self._get_data_from_mysql()
+    def transfer(self, flushBefore = False):
+        if flushBefore:
+            self._resetMysql()
 
-        self._update_rows()
+        mapSourceTarget = dict()
+        mapSourceTarget['5'] = ('temperature', 'HennenstallInnen', 'value')
 
-        logger.debug('All data transfer  completed : %s '% self._complete)
+        for source, target in mapSourceTarget.items():
+            
+            if flushBefore:
+                logger.debug('Flushing old entries in influxdb')
+                delete_api = self._influx_client.delete_api()
+                delete_api.delete(start = "1970-01-01T00:00:00Z", stop = "2021-02-01T00:00:00Z", predicate=f'_measurement="{target[0]}"', bucket=self._influx_db_bucket, org=self._influx_db_org)
 
 
-    def _purge_data_in_db(self):
+            rows = self._getDataFromMysql(source)
+            influxData = self._convertToInflux(rows, measurement=target[0], location=target[1], field=target[2])
+            self._writeToInflux(influxData)
+            self._updateEntriesInMysql(rows)
+
+        logger.debug('All data transfers completed')
+
+
+    def _resetMysql(self):
         """
         Once the data is configured and within influx we can pruge our database
         """
-        if self._complete:
-            query = "SELECT * FROM TABLE %s WHERE %s = 0 ORDER BY %s DESC"%(self._table, self._check_fields,self._time_field)
+        query = f"UPDATE {self._table} SET {self._check_field}=0;"
+        logger.debug('Resetting mysql source : executing query %s '% query)
+        c =  self._db_client.cursor()
+        c.execute(query)
+        self._db_client.commit()
 
 
-    def _get_data_from_mysql(self):
+    def _getDataFromMysql(self, sourceId):
         """
         get the cursor to dump all the data from mysql
         """
-        query = "SELECT * FROM `%s` WHERE `%s`=0 ORDER BY %s DESC"%(self._table,self._check_field,self._time_field)
+        query = "SELECT * FROM `%s` WHERE `%s`=0 AND `%s`=%s ORDER BY %s DESC"%(self._table,self._check_field,self._extra_where_field, sourceId, self._time_field)
 
         logger.debug('executing query %s '% query)
         cursor = self._db_client.cursor()
@@ -91,50 +105,52 @@ class Mysql2Influx:
         rows = cursor.fetchall()
         logger.info('querying MYSQL got %s rows'%len(rows))
 
-        self._format_data(rows)
+        return rows
 
 
-    def _send_data_to_influx(self,data_point):
+    def _writeToInflux(self,data_point,flushBefore=False):
         """
         Break up data to make sure in the format the inflxu like
         """
         logger.debug('Sending data to influx %s ...'%data_point[0])
-        self._influx_client.write_points(data_point)
+        self._write_api.write(bucket=self._influx_db_bucket, record=data_point)
 
 
-    def _format_data(self,data):
-        self._complete = False
-        #turn time into epoch timesa
+    def _convertToInflux(self, data, measurement, field, location):
+        data_list = list()
+
         if data:
             logger.debug('Got data from mysql')
             for row in data:
-                data_list =[]
-                for key in row.keys():
-                    epoch_time = row[self._time_field].isoformat()
 
-                    if not isinstance(row[key], datetime):
-                        data_point = {
-                            "measurement": key,
-                            "tags": {
-                                "site_name": row[self._siteid_field],
-                                "source": "ckend"
-                            },
-                            "time": "%s" % epoch_time,
-                            "fields": {"value": row[key]}
-                        }
+                data_point = {
+                    "measurement" : measurement,
+                    "tags": {
+                        "location": location
+                    },
+                    "time": "%s" % row[self._time_field].isoformat(),
+                    "fields": {
+                        field : row['measurement']
+                    }
+                }
+                #logger.debug("data_point = %s"%data_point)
+                data_list.append(data_point)
 
-                        data_list.append(data_point)
-                        logger.debug("data_point = %s"%data_point)
-                self._send_data_to_influx(data_list)
-            self._complete = True
+        return data_list
 
-    def _update_rows(self):
-        query = 'UPDATE %s SET %s=1  WHERE %s=0;'%(self._table,self._check_field,self._check_field)
-        if self._complete:
-           logger.debug('Updating rows : executing query %s '% query)
-           c =  self._db_client.cursor()
-           c.execute(query)
-           self._db_client.commit()
+    def _updateEntriesInMysql(self, rows):
+        ids = list()
+        for entry in rows:
+            ids.append(str(entry['id']))
+        idsString = ",".join(ids)
+
+        query = f"UPDATE {self._table} SET {self._check_field}=1  WHERE `id` IN ({idsString});"
+        logger.debug('Updating rows : executing query %s '% query)
+        c =  self._db_client.cursor()
+        c.execute(query)
+        self._db_client.commit()
+
+
 def main():
     #Argument parsing
     parser = argparse.ArgumentParser(description = 'Get Time series data from MYSQL and push it to influxdb' )
@@ -160,16 +176,16 @@ def main():
     #start
     mclient = Mysql2Influx(config)
     if not args.server:
-        mclient.transfer_data()
+        mclient.transfer()
     else:
         logger.info('Starting up server mode interval:  %s' % _sleep_time)
         while True:
             try:
-                mclient.transfer_data()
+                mclient.transfer()
             except Exception as e:
                 logger.exception("Error occured will try again")
             time.sleep(_sleep_time)
-            mclient.initialise_database()
+            mclient.connect()
 
 if __name__ == '__main__':
     #Check our config file

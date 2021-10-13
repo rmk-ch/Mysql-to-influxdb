@@ -1,4 +1,4 @@
-influxdb
+influxdb_client
 pymysql
 python-dateutil
 pytz
