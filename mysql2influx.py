@@ -74,6 +74,10 @@ class Mysql2Influx:
 
             rows = self._getDataFromMysql(source)
             influxData = self._convertToInflux(rows, measurement=target[0], location=target[1], field=target[2])
+            if len(rows) < 1:
+                logger.info('No data to be transferred')
+                continue
+
             self._writeToInflux(influxData)
             self._updateEntriesInMysql(rows)
 
@@ -108,7 +112,7 @@ class Mysql2Influx:
         return rows
 
 
-    def _writeToInflux(self,data_point,flushBefore=False):
+    def _writeToInflux(self,data_point : list, flushBefore=False):
         """
         Break up data to make sure in the format the inflxu like
         """
@@ -116,7 +120,7 @@ class Mysql2Influx:
         self._write_api.write(bucket=self._influx_db_bucket, record=data_point)
 
 
-    def _convertToInflux(self, data, measurement, field, location):
+    def _convertToInflux(self, data : list, measurement : str, field : str, location : str) -> list:
         data_list = list()
 
         if data:
@@ -138,7 +142,7 @@ class Mysql2Influx:
 
         return data_list
 
-    def _updateEntriesInMysql(self, rows):
+    def _updateEntriesInMysql(self, rows : list):
         ids = list()
         for entry in rows:
             ids.append(str(entry['id']))
